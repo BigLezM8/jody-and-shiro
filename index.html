@@ -39,7 +39,11 @@ html,body{height:100%;margin:0;background:var(--ink);color:var(--fg);font-family
   padding:28px clamp(18px,4vw,36px) 26px;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);display:flex;flex-direction:column;gap:18px}
 .panel.wide{width:min(820px,100%)}
 .kicker{font:600 12px/1 var(--body);letter-spacing:.22em;text-transform:uppercase;color:var(--gold)}
-.logo{margin:0;font-family:var(--display);font-weight:400;line-height:.86;font-size:clamp(46px,13vw,92px);letter-spacing:.01em;display:flex;flex-direction:column}
+.tpanel{width:min(660px,100%)}
+.hero{display:flex;align-items:flex-end;justify-content:space-between;gap:8px}
+.hero .logo{min-width:0}
+#heroCv{flex:none;width:clamp(92px,27vw,170px);aspect-ratio:17/13.4;max-width:100%}
+.logo{margin:0;font-family:var(--display);font-weight:400;line-height:.86;font-size:clamp(36px,10.5vw,86px);letter-spacing:.01em;display:flex;flex-direction:column}
 .logo .a{color:transparent;-webkit-text-stroke:2px var(--p1);text-shadow:0 0 18px rgba(62,240,255,.55)}
 .logo .b{color:var(--gold);text-shadow:4px 4px 0 #ff4b3e,0 0 30px rgba(255,201,60,.35);transform:skewX(-6deg);transform-origin:left}
 .logo .b em{font-style:normal;color:#fff1dc;text-shadow:4px 4px 0 #e8893a,0 0 30px rgba(232,137,58,.4)}
@@ -119,11 +123,11 @@ kbd{font:700 12px/1 var(--body);min-width:26px;text-align:center;padding:6px 7px
 </div>
 
 <div id="title" class="screen">
-  <div class="panel">
+  <div class="panel tpanel">
     <div class="kicker">The adventures of</div>
-    <h1 class="logo"><span class="a">JODY</span><span class="b">&amp; <em>SHIRO</em></span></h1>
-    <div class="sub"><span>GATEBREAKER</span> · A siege on the Ember Road</div>
-    <p class="pitch"><b>Jody</b> and her Shiba Inu <b>Shiro</b> (plus <b>Cam</b>, if he keeps up) lead an army down the Ember Road. Grow it through <b>number gates</b>, crack <b>gold crates</b> for flamethrowers, mechs and tamed dragons, and fight through five chapters of goblins, ogres, necromancers and worse. Shiro bites anything that gets too close. Good boy.</p>
+    <div class="hero"><h1 class="logo"><span class="a">JODY</span><span class="b">&amp; <em>SHIRO</em></span></h1><canvas id="heroCv" aria-hidden="true"></canvas></div>
+    <div class="sub"><span>GATEBREAKER</span> · A siege on Abbeydale Road</div>
+    <p class="pitch"><b>Jody</b> and <b>Shiro</b> (plus <b>Cam</b>, if he keeps up) lead an army down Abbeydale Road. Grow it through <b>number gates</b>, crack <b>gold crates</b> for flamethrowers, mechs and tamed dragons, and fight through five chapters of goblins, ogres, necromancers and worse. Shiro bites anything that gets too close. Good boy.</p>
     <div class="how">
       <div style="--c:#4d8bff"><b>Gates</b>Shoot a gate to pump its number, then walk through the one you want.</div>
       <div style="--c:#ffc93c"><b>Crates</b>Break one for a weapon or power-up. Every second on it is a second the horde walks free.</div>
@@ -235,7 +239,7 @@ const START = 8;
 
 // ================= canvas & sizing =================
 const cv = document.getElementById('cv');
-const ctx = cv.getContext('2d');
+let ctx = cv.getContext('2d');
 let DPR = 1, CW = 0, CH = 0, S = 1, VW = 600, VH = 900, OX = 0, SQY = 750, vig = null;
 function resize() {
   DPR = Math.min(window.devicePixelRatio || 1, 2);
@@ -551,7 +555,7 @@ function stageClear() {
     p.mech = 0; p.storm = 0;
   }
   sfx.clear();
-  if (d.s === 5) banner('JODY & SHIRO SAVED THE EMBER ROAD', 'The Endless March begins', C.gold, 3.4);
+  if (d.s === 5) banner('JODY & SHIRO SAVED ABBEYDALE ROAD', 'The Endless March begins', C.gold, 3.4);
   else banner('CHAPTER ' + d.s + ' CLEAR', bonus ? 'Survivor bonus +' + fmt(bonus) : 'The road is yours', C.p1, 2.4);
   if (G.shiro && !G.players[0].down) { G.shiro.mode = 'party'; G.shiro.party = 2.4; later(0.4, () => { text(G.shiro.x, G.shiro.y - 30, 'GOOD BOY!', '#ffb36b', 24, 1.2); sfx.bork(); }); }
   later(2.8, () => openPerks(d.s));
@@ -1929,7 +1933,7 @@ function drawJody(x, fy, t, moving, col, blink) {
   ctx.restore();
 }
 function drawShiro(sh, t, mini) {
-  const run = sh.mode !== 'heel' || Math.abs(sh.vx) > 2, st = run ? Math.sin(t * (sh.mode === 'zoom' ? 30 : 18)) : 0, ch = mini ? 0 : G.dir.s;
+  const run = sh.mode !== 'heel' || Math.abs(sh.vx) > 2, st = run ? Math.sin(t * (sh.mode === 'zoom' ? 30 : 18)) : 0, ch = mini ? 0 : G ? G.dir.s : 1;
   ctx.save(); ctx.translate(sh.x, sh.y); ctx.scale(1.25, 1.25);
   if (!mini) { ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.beginPath(); ctx.ellipse(0, 2, 14, 4, 0, 0, TAU); ctx.fill(); }
   additive(() => drawGlow(0, -8, 24, '#ff9a4a', sh.mode === 'zoom' ? 0.6 : 0.25));
@@ -2570,6 +2574,27 @@ function render(rdt) {
   }
 }
 
+// ================= title hero =================
+const heroCv = document.getElementById('heroCv'), heroCtx = heroCv.getContext('2d');
+const HERO = { blink: 2, hop: 0, t: 0, nextHop: 2.5, sh: { x: 0, y: 0, face: 1, mode: 'heel', vx: 0 } };
+function drawHero(rdt) {
+  const w = heroCv.clientWidth, h = heroCv.clientHeight; if (!w || !h) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  if (heroCv.width !== Math.round(w * dpr)) { heroCv.width = Math.round(w * dpr); heroCv.height = Math.round(h * dpr); }
+  HERO.t += rdt; HERO.blink -= rdt; if (HERO.blink < -0.12) HERO.blink = rand(2, 4.5);
+  HERO.nextHop -= rdt; if (HERO.nextHop <= 0) { HERO.hop = 0.5; HERO.nextHop = rand(2.2, 4); } HERO.hop = Math.max(0, HERO.hop - rdt);
+  const saved = ctx; ctx = heroCtx;
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, heroCv.width, heroCv.height);
+  const k = dpr * w / 170; ctx.setTransform(k, 0, 0, k, 0, 0);
+  additive(() => drawGlow(85, 120, 90, '#7b5cff', 0.35));
+  ctx.fillStyle = 'rgba(123,92,255,.25)'; ctx.beginPath(); ctx.ellipse(85, 126, 78, 9, 0, 0, TAU); ctx.fill();
+  ctx.save(); ctx.translate(108, 124); ctx.scale(1.55, 1.55); drawJody(0, 0, HERO.t, false, C.p1, HERO.blink < 0); ctx.restore();
+  const hop = HERO.hop > 0 ? Math.sin((0.5 - HERO.hop) / 0.5 * Math.PI) * 14 : 0;
+  HERO.sh.mode = HERO.hop > 0 ? 'dash' : 'heel';
+  ctx.save(); ctx.translate(40, 126 - hop); ctx.scale(1.45, 1.45); HERO.sh.x = 0; HERO.sh.y = 0; drawShiro(HERO.sh, HERO.t, false); ctx.restore();
+  ctx = saved;
+}
+
 // ================= loop =================
 let last = performance.now();
 function frame(now) {
@@ -2591,6 +2616,7 @@ function frame(now) {
     NET.inT -= rdt; if (NET.inT <= 0) { NET.inT = 0.05; send({ T: 'i', x: Math.round(G.players[me()].x) }); }
   }
   render(running || gRun ? rdt : 0);
+  if (!ui.title.hidden) drawHero(rdt);
   requestAnimationFrame(frame);
 }
 
