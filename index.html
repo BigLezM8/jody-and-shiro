@@ -720,12 +720,12 @@ function gatePair(kind) {
   const mk = (o, x0, x1) => ({ op: o.op, val: o.val, x0, x1, prog: 0, k: 0, bump: 0, flash: 0, broken: false });
   G.gates.push({ y: -60, h: 74, applied: false, gates: [mk(a, 16, 286), mk(b, 314, 584)] });
 }
-function crateType(exclude) {
+function crateType(exclude, who) {
   const s = G.dir.s; const idx = G.crateIdx++;
   const early = ['mg', 'troops', 'tank'];
   if (idx < early.length && early[idx] !== exclude) return early[idx];
   const w = []; const add = (t, v) => { if (t !== exclude && v > 0) w.push([t, v]); };
-  const any = f => G.players.some(p => !p.down && f(p));
+  const any = f => (who ? [who] : G.players).some(p => !p.down && f(p));
   for (const g of ['ray', 'flame', 'volt', 'scatter', 'plasma', 'buzzsaw', 'rail', 'fireworks', 'pupcannon']) add(g, any(p => p.gun !== g) ? (any(p => !p.used[g]) ? 1.4 : 0.8) : 0.6);
   add('mystery', idx >= 3 ? 1.1 : 0);
   add('mg', any(p => p.gun === 'rifle') ? 2 : 0);
@@ -744,7 +744,10 @@ function crateType(exclude) {
   for (const [k, v] of w) { r -= v; if (r <= 0) return k; }
   return 'troops';
 }
-function teamDps() { let t = 0; for (const p of alive()) { const m = power(p); t += GUNS[p.gun].dps * m * rateM(p) * (1 + 0.25 * (p.gunLv || 0)) + p.tanks * 12 * m + p.rockets * 10 * m + p.drones * 11 * m; } return t; }
+function pDps(p) { const m = power(p); return GUNS[p.gun].dps * m * rateM(p) * (1 + 0.25 * (p.gunLv || 0)) + p.tanks * 12 * m + p.rockets * 10 * m + p.drones * 11 * m; }
+function teamDps() { let t = 0; for (const p of alive()) t += pDps(p); return t; }
+function weakest() { const al = alive(); if (!al.length) return G.players[0]; return al.reduce((a, b) => pDps(b) < pDps(a) ? b : a); }
+function sideOwner(x) { return G.players.length < 2 ? -1 : x < 290 ? 0 : x > 310 ? 1 : -1; }
 function crateHP(s) { const idx = G.crateIdx; const base = (26 + 34 * Math.min(idx, 30)) * (1 + 0.5 * (s - 1)) * Math.pow(1.25, Math.max(0, s - 3)); return Math.max(25, Math.min(base, teamDps() * 3.2)); }
 function envTick(dt) {
   if (G.dir.clearing) return;
@@ -837,19 +840,21 @@ function updateEdge(dt) {
   G.edge += (tgt - G.edge) * Math.min(1, dt * 0.5);
 }
 function supplyDrop() {
-  const al = alive(); let type;
-  if (al.some(p => p.gun === 'rifle')) type = 'mg';
-  else { const opts = Object.keys(GUNS).filter(g => g !== 'rifle' && g !== 'mg' && !al.some(p => p.gun === g)); type = Math.random() < 0.65 && opts.length ? pick(opts) : pick(['tank', 'drones', 'shield', 'mystery']); }
+  const w = weakest(); let type;
+  if (w.gun === 'rifle') type = 'mg';
+  else { const opts = Object.keys(GUNS).filter(g => g !== 'rifle' && g !== 'mg' && g !== w.gun && !w.used[g]); type = Math.random() < 0.65 && opts.length ? pick(opts) : pick(['tank', 'drones', 'shield', 'mystery']); }
   const c = spawnCrate(300, type); c.hp = c.maxhp = Math.max(20, c.hp * 0.45);
+  if (G.players.length > 1) c.owner = w.id;
   text(300, 150, 'SUPPLY DROP', C.gold, 26, 1.4);
 }
 function spawnCrate(x, type) {
-  const s = G.dir.s; const hp = crateHP(s);
-  const c = { x, y: -70, w: 88, h: 88, type: type || crateType(), hp, maxhp: hp, lastHit: -1, bump: 0, dead: false, missed: false, pair: null };
+  const s = G.dir.s; const hp = crateHP(s), ow = sideOwner(x);
+  const c = { x, y: -70, w: 88, h: 88, type: type || crateType(undefined, ow >= 0 ? G.players[ow] : null), hp, maxhp: hp, lastHit: -1, bump: 0, dead: false, missed: false, pair: null, owner: ow };
   G.crates.push(c); return c;
 }
 function siege(ogre) {
-  const s = G.dir.s; const left = Math.random() < 0.5;
+  const s = G.dir.s; let left = Math.random() < 0.5;
+  if (G.players.length > 1 && alive().length > 1) { const [a, b] = G.players, ra = pDps(a) / Math.max(1, pDps(b)); G.sieg = (G.sieg || 0) ^ 1; left = ra < 0.7 ? true : ra > 1.43 ? false : !!G.sieg; }
   const l0 = left ? 306 : 0, l1 = left ? RW : 294;
   spawnCrate(left ? 150 : 450);
   G.walls.push({ x: 300, y: -30, len: SCROLL * 4.8 + 200 });
@@ -858,9 +863,10 @@ function siege(ogre) {
 }
 function choice() {
   const s = G.dir.s; seen('choice');
-  const t1 = crateType(); const t2 = crateType(t1);
-  const a = spawnCrate(110, t1), b = spawnCrate(490, t2 === t1 ? 'troops' : t2);
-  a.pair = b; b.pair = a;
+  const co = G.players.length > 1;
+  const t1 = crateType(undefined, co ? G.players[0] : null); const t2 = crateType(co ? undefined : t1, co ? G.players[1] : null);
+  const a = spawnCrate(110, t1), b = spawnCrate(490, !co && t2 === t1 ? 'troops' : t2);
+  if (!co) { a.pair = b; b.pair = a; }
   G.walls.push({ x: 212, y: -30, len: SCROLL * 4.8 + 200 }, { x: 388, y: -30, len: SCROLL * 4.8 + 200 });
   horde(6 + 3 * s, 222, 378, 3.6);
 }
@@ -994,7 +1000,7 @@ function dmgCrate(c, d, who) {
 function reward(c) {
   c.dead = true;
   if (c.pair && !c.pair.dead) { const o = c.pair; o.dead = true; burst(o.x, o.y, '#8a7fb0', 26, 260, 3, 0.6); chunks(o.x, o.y, '#3a2f55', 10, 200); text(o.x, o.y, 'LOST', '#8a7fb0', 22, 1); }
-  const p = owner(c.lastHit);
+  const p = c.owner >= 0 ? owner(c.owner) : G.players.length > 1 ? weakest() : owner(c.lastHit);
   const [title, sub] = giveCrate(p, c.type);
   p.score += 100 * G.dir.s; p.boost = 1;
   burst(c.x, c.y, C.gold, 60, 480, 4.5, 0.9); chunks(c.x, c.y, '#6b4a10', 14, 320); ring(c.x, c.y, C.gold, 10, 200, 0.6, 8); flare(c.x, c.y, C.gold, 220, 0.5);
@@ -2093,6 +2099,7 @@ function drawCrates() {
     ctx.globalAlpha = a;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     const nm = CR[c.type].name;
+    if (G.players.length > 1 && c.owner >= 0 && !c.missed) { const op = G.players[c.owner]; ctx.font = '14px ' + FD; ctx.lineWidth = 5; ctx.strokeStyle = C.ink; ctx.strokeText('FOR ' + op.name, c.x, c.y - h / 2 - 38); ctx.fillStyle = op.col; ctx.fillText('FOR ' + op.name, c.x, c.y - h / 2 - 38); }
     ctx.font = '14px ' + FD; ctx.lineWidth = 5; ctx.strokeStyle = C.ink; ctx.strokeText(nm, c.x, c.y - h / 2 - 18); ctx.fillStyle = C.gold; ctx.fillText(nm, c.x, c.y - h / 2 - 18);
     if (!c.missed) {
       const n = fmt(Math.max(0, Math.ceil(c.hp)));
@@ -3208,11 +3215,11 @@ function snapshot() {
     E.push(d);
   }
   const ev = NET.log; NET.log = [];
-  return { T: 's', sc: rr(G.scroll), d: [G.dir.s, rd(G.dir.t), rd(G.dir.len)], fz: rd(G.freeze), fl: rd(G.flash), fc: G.flashCol,
+  return { T: 's', sq: Math.round(SQY), sc: rr(G.scroll), d: [G.dir.s, rd(G.dir.t), rd(G.dir.len)], fz: rd(G.freeze), fl: rd(G.flash), fc: G.flashCol,
     P: G.players.map(p => ({ count: p.count, x: rr(p.x), gun: p.gun, gunLv: p.gunLv, ult: r2(p.ult), giant: rd(p.giant), disco: rd(p.disco), dmgMul: p.dmgMul, tanks: p.tanks, rockets: p.rockets, drones: p.drones, shield: rr(p.shield), shieldHit: rd(p.shieldHit), mech: rd(p.mech), ally: p.ally, allyBreath: rd(p.allyBreath), storm: rd(p.storm), score: p.score, chill: rd(p.chill), down: p.down, hurt: rd(p.hurt), boost: rd(p.boost), perks: p.perks, lost: p.lost, kills: p.kills })),
     N, E,
     GT: G.gates.map(g => [rr(g.y), g.h, g.applied ? 1 : 0, g.gates.map(t => [t.op, t.val, t.x0, t.x1, rd(t.prog), t.k, rd(t.bump), rd(t.flash), t.broken ? 1 : 0])]),
-    CR: G.crates.map(c => [rr(c.x), rr(c.y), c.type, rr(c.hp), rr(c.maxhp), rd(c.bump), c.missed ? 1 : 0, c.pair && !c.pair.dead ? 1 : 0]),
+    CR: G.crates.map(c => [rr(c.x), rr(c.y), c.type, rr(c.hp), rr(c.maxhp), rd(c.bump), c.missed ? 1 : 0, c.pair && !c.pair.dead ? 1 : 0, c.owner == null ? -1 : c.owner]),
     W: G.walls.map(w => [w.x, rr(w.y), rr(w.len)]),
     Z: G.zones.map(z => ({ k: z.k, fx: z.fx, x: rr(z.x || 0), r: z.r, w: z.w, t: r2(z.t), max: z.max, dur: z.dur, act: r2(z.act), side: z.side, y: z.y != null ? rr(z.y) : undefined, g0: z.g0 != null ? rr(z.g0) : undefined, g1: z.g1 != null ? rr(z.g1) : undefined, col: z.col, spd: z.spd, fired: z.fired })),
     F: G.eshots.map(f => [EK.indexOf(f.k), rr(f.x), rr(f.y), rr(f.vx), rr(f.vy), f.r, rd(f.t)]),
@@ -3229,8 +3236,35 @@ function newGuest() {
   G = blankG('coop'); G.dir = { s: 1, t: 0, ev: [], i: 0, len: 1, boss: false };
   NET.ents = new Map(); NET.hold = false; hideScreens(); ui.bPause.hidden = true; $('overNote').textContent = ''; wake();
 }
+function scaleSnap(S, k) {
+  if (!k || Math.abs(k - 1) < 0.003) return;
+  for (const d of S.E) d[2] *= k;
+  for (const g of S.GT) g[0] *= k;
+  for (const c of S.CR) c[1] *= k;
+  for (const w of S.W) { w[1] *= k; w[2] *= k; }
+  for (const z of S.Z) { if (z.y != null) z.y *= k; if (z.spd) z.spd *= k; }
+  for (const f of S.F) { f[2] *= k; f[4] *= k; }
+  for (const q of S.SH) { q[1] *= k; q[2] *= k; }
+  for (const r of S.RK) { r[1] *= k; r[3] *= k; }
+  if (S.SR) S.SR[1] = SQY + (S.SR[1] - S.sq) * Math.min(1, k);
+  for (const h of S.HO || []) h[1] *= k;
+  for (const m of S.MI || []) { m[2] *= k; if (m[0] === 0) { m[4] *= k; m[5] *= k; } else m[3] *= k; }
+  for (const b of S.BA || []) { b[1] *= k; b[3] *= k; }
+  for (const j of S.JE || []) j[1] *= k;
+  for (const o of S.OR || []) { o[1] *= k; o[4] *= k; }
+  for (const a of [S.SA, S.FW, S.PU]) for (const q of a || []) { q[1] *= k; q[3] *= k; }
+  for (const t of S.TO || []) t[1] *= k;
+  if (S.BU) S.BU[1] *= k;
+  for (const a of S.ev || []) switch (a[0]) {
+    case 'b': case 'c': case 'r': case 'f': case 'm': case 't': a[2] *= k; break;
+    case 'p': if (a[1].y != null) a[1].y *= k; break;
+    case 'bo': for (const q of a[1]) q[1] *= k; break;
+    case 'rl': case 'db': a[2] *= k; a[4] *= k; break;
+  }
+}
 function applySnap(S) {
   if (!G) newGuest();
+  if (S.sq) scaleSnap(S, SQY / S.sq);
   if (Math.abs(S.sc - G.scroll) > 60) G.scroll = S.sc; else G.scroll += (S.sc - G.scroll) * 0.25;
   G.dir.s = S.d[0]; G.dir.t = S.d[1]; G.dir.len = S.d[2];
   G.freeze = S.fz; if (S.fl > G.flash) { G.flash = S.fl; G.flashCol = S.fc; }
@@ -3247,7 +3281,7 @@ function applySnap(S) {
   for (const id of [...NET.ents.keys()]) if (!keep.has(id)) NET.ents.delete(id);
   G.enemies = list;
   G.gates = S.GT.map(([y, h, ap, gs]) => ({ y, h, applied: !!ap, gates: gs.map(t => ({ op: t[0], val: t[1], x0: t[2], x1: t[3], prog: t[4], k: t[5], bump: t[6], flash: t[7], broken: !!t[8] })) }));
-  G.crates = S.CR.map(c => ({ x: c[0], y: c[1], type: c[2], hp: c[3], maxhp: c[4], bump: c[5], missed: !!c[6], pair: c[7] ? { dead: false } : null, w: 88, h: 88, dead: false }));
+  G.crates = S.CR.map(c => ({ x: c[0], y: c[1], type: c[2], hp: c[3], maxhp: c[4], bump: c[5], missed: !!c[6], pair: c[7] ? { dead: false } : null, owner: c[8] == null ? -1 : c[8], w: 88, h: 88, dead: false }));
   G.walls = S.W.map(w => ({ x: w[0], y: w[1], len: w[2] }));
   G.zones = S.Z;
   G.eshots = S.F.map(f => ({ k: EK[f[0]], x: f[1], y: f[2], vx: f[3], vy: f[4], r: f[5], t: f[6] }));
