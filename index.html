@@ -453,7 +453,10 @@ const CR = {
   mech: { name: 'MEGA MECH', icon: 'mech' },
   ally: { name: 'TAMED DRAGON', icon: 'dragon' },
   zoomies: { name: 'SHIRO ZOOMIES', icon: 'paw' },
-  awoo: { name: 'AWOO', icon: 'paw' }
+  awoo: { name: 'AWOO', icon: 'paw' },
+  golden: { name: 'GOLDEN ARSENAL', icon: 'crown' },
+  dual: { name: 'DUAL WIELD', icon: 'dual' },
+  army: { name: 'ARMY SURGE', icon: 'troops' }
 };
 const PERKS = [
   { id: 'dmg', name: 'Hollow Points', desc: '+20% damage from everything you fire', max: 5 },
@@ -562,6 +565,8 @@ function startStage(s) {
   }
   t += prev + 1.5; ev.push({ t, fn: spawnBoss });
   if (s >= 2) ev.unshift({ t: 0.4, fn: supplyDrop });
+  G.crateBeat = 0; G.legendAt = null;
+  if (Math.random() < Math.min(0.55, 0.2 + 0.07 * (s - 1))) { const n = plan.filter(([k]) => k === 'siege' || k === 'choice').length; if (n) G.legendAt = ri(0, n - 1); }
   G.dir = { s, t: 0, ev, i: 0, len: t, boss: false };
   for (const p of G.players) { p.lost = 0; p.ally = false; const ae = perk(p, 'aegis'); if (ae && !p.down) p.shield += Math.round(ae * (25 * PW(s) + 0.2 * p.count)); }
   banner('CHAPTER ' + s, stageName(s).toUpperCase(), C.gold, 2.6);
@@ -740,11 +745,17 @@ function crateType(exclude, who) {
   if (s >= 2) add('mech', s >= 3 ? 0.8 : 0.4);
   if (s >= 3) add('ally', any(p => !p.ally) ? 0.7 : 0);
   add('zoomies', 1); add('awoo', s >= 2 ? 0.8 : 0.4);
-  let tot = 0; for (const [, v] of w) tot += v; let r = Math.random() * tot;
-  for (const [k, v] of w) { r -= v; if (r <= 0) return k; }
+  const rw = [Math.max(20, 62 - 9 * (s - 1)), Math.min(40, 30 + 2 * (s - 1)), Math.min(40, 8 + 6 * (s - 1))];
+  let tier = 0, rr0 = Math.random() * (rw[0] + rw[1] + rw[2]); while (tier < 2 && (rr0 -= rw[tier]) > 0) tier++;
+  for (let t = tier; t >= 0; t--) {
+    const ws = w.filter(([k]) => CRAR[k] === t); if (!ws.length) continue;
+    let tot = 0; for (const [, v] of ws) tot += v; let r = Math.random() * tot;
+    for (const [k, v] of ws) { r -= v; if (r <= 0) return k; }
+    return ws[0][0];
+  }
   return 'troops';
 }
-function pDps(p) { const m = power(p); return GUNS[p.gun].dps * m * rateM(p) * (1 + 0.25 * (p.gunLv || 0)) + p.tanks * 12 * m + p.rockets * 10 * m + p.drones * 11 * m; }
+function pDps(p) { const m = power(p); return GUNS[p.gun].dps * m * rateM(p) * (1 + 0.25 * (p.gunLv || 0)) + (p.gun2 ? GUNS[p.gun2].dps * m * rateM(p) * 0.9 : 0) + p.tanks * 12 * m + p.rockets * 10 * m + p.drones * 11 * m; }
 function teamDps() { let t = 0; for (const p of alive()) t += pDps(p); return t; }
 function weakest() { const al = alive(); if (!al.length) return G.players[0]; return al.reduce((a, b) => pDps(b) < pDps(a) ? b : a); }
 function sideOwner(x) { return G.players.length < 2 ? -1 : x < 290 ? 0 : x > 310 ? 1 : -1; }
@@ -776,6 +787,88 @@ function updateBus(dt) {
   for (const f of G.eshots) if (!f.dead && Math.abs(f.x - b.x) < 85 && Math.abs(f.y - b.y) < 30) popShot(f);
   if (b.x < -280 || b.x > RW + 280) G.bus = null;
 }
+// every shootable thing on the road, so homing weapons can hit crates and gates too
+function hittables() {
+  const L = [];
+  for (const e of G.enemies) if (targetable(e)) L.push({ k: 'e', o: e, r: e.r });
+  for (const c of G.crates) if (!c.dead && !c.missed && c.y > -40 && c.y < SQY - 70) L.push({ k: 'c', o: c, r: c.w / 2 });
+  for (const g of G.gates) if (!g.applied && g.y > -30 && g.y < SQY - 70) for (const gt of g.gates) if (!gt.broken && (gt.op === '+' || (gt.op === '×' && gt.val < 3))) L.push({ k: 'g', o: gt, g, r: 34 });
+  return L;
+}
+const hPos = h => h.k === 'g' ? [(h.o.x0 + h.o.x1) / 2, h.g.y] : [h.o.x, h.o.y];
+const hLive = h => h.k === 'e' ? !h.o.dead && !h.o.ghost : h.k === 'c' ? !h.o.dead && !h.o.missed : !h.o.broken && !h.g.applied;
+function hitObj(h, d, who) { if (h.k === 'e') dmgEnemy(h.o, d, who, 'x'); else if (h.k === 'c') dmgCrate(h.o, d, who); else dmgGate(h.o, d, who); }
+// what's in front of this player: the closest thing in their column, else the closest enemy anywhere
+function frontTarget(p, col) {
+  const L = hittables(); let best = null, by = -1e9;
+  for (const h of L) { const [x, y] = hPos(h); if (Math.abs(x - p.x) < col + h.r * 0.6 && y > by) { by = y; best = h; } }
+  if (best) return best;
+  let bd = 1e9; for (const h of L) if (h.k === 'e') { const [x, y] = hPos(h); const d = Math.hypot(x - p.x, y - SQY); if (d < bd) { bd = d; best = h; } }
+  return best;
+}
+function fireGun(p, dt, R) {
+  const mul = power(p), rm = rateM(p), Gd = GUNS[p.gun];
+  if (p.gun === 'rifle' || p.gun === 'mg') {
+    const n = visN(p); const sps0 = Gd.rate * (1 + Math.min(n, 60) / 14), sps = sps0 * rm * (1 + 0.4 * p.gunLv);
+    p.fireT -= dt; let guard = 0;
+    const crit = 0.12 * perk(p, 'crit'), pierce = perk(p, 'pierce');
+    while (p.fireT <= 0 && guard++ < 14) {
+      p.fireT += 1 / sps;
+      const sp = SP[Math.floor(Math.random() * n)];
+      const x = p.x + sp[0] + 3.4 + (p.gun === 'mg' ? rand(-2, 2) : 0), y = SQY + sp[1] - 14;
+      const isCrit = Math.random() < crit;
+      G.bullets.push({ x, y, vy: p.gun === 'rifle' ? -900 : -1080, vx: p.gun === 'mg' ? rand(-25 - 15 * p.gunLv, 25 + 15 * p.gunLv) : 0, dmg: Gd.dps * mul / sps0 * (isCrit ? 4 : 1), who: p.id, col: isCrit ? C.gold : G.fever > 0 ? RAINBOW[(Math.random() * 12) | 0] : p.col, crit: isCrit, pierce, hits: null });
+      if (Math.random() < 0.3) part({ k: 'f', x, y: y - 2, r: 10, life: 0.06, max: 0.06, col: p.col }, 1);
+    }
+    sfx.shot();
+  } else if (p.gun === 'ray') rayTick(p, dt, Gd.dps * mul * rm);
+  else if (p.gun === 'flame') coneTick(p, p.x, SQY - squadR(p) * 0.6, 270 + squadR(p) + 50 * p.gunLv, 0.4 + 0.1 * p.gunLv, R * 0.45, Gd.dps * mul * rm * dt * (1 + 0.25 * p.gunLv), dt, true, p.gunLv);
+  else if (p.gun === 'scatter') {
+    p.fireT -= dt;
+    if (p.fireT <= 0) {
+      p.fireT = 1 / (Gd.rate * rm); const n = 7 + 3 * p.gunLv + Math.min(6, Math.floor(visN(p) / 12)), per = Gd.dps * mul / Gd.rate / n * (1 + 0.15 * p.gunLv);
+      for (let i = 0; i < n; i++) { const a = -Math.PI / 2 + (i / (n - 1) - 0.5) * 0.85 + rand(-0.04, 0.04), sp = rand(820, 980); G.bullets.push({ x: p.x + rand(-R * 0.4, R * 0.4), y: SQY - R * 0.6, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, dmg: per, who: p.id, col: G.fever > 0 ? RAINBOW[i % 12] : p.col, pierce: perk(p, 'pierce'), hits: null, life: 0.6 }); }
+      part({ k: 'f', x: p.x, y: SQY - R * 0.7, r: 40, life: 0.1, max: 0.1, col: p.col }, 1); sfx.cannon();
+    }
+  } else if (p.gun === 'buzzsaw') {
+    p.fireT -= dt;
+    if (p.fireT <= 0) {
+      p.fireT = 1 / (Gd.rate * rm); const n = 1 + p.gunLv, d = Gd.dps * mul / Gd.rate / n * 0.55 * (1 + 0.15 * p.gunLv);
+      for (let i = 0; i < n; i++) { const a = -Math.PI / 2 + (i - (n - 1) / 2) * 0.38; G.saws.push({ x: p.x, y: SQY - R * 0.6 - 40, vx: Math.cos(a) * 760, vy: Math.sin(a) * 760, t: 0, back: false, r: 15 + 2 * p.gunLv, dmg: d, who: p.id, col: p.col, hit: {} }); }
+      sfx.saw();
+    }
+  } else if (p.gun === 'rail') {
+    p.fireT -= dt;
+    if (p.fireT <= 0) {
+      p.fireT = 1 / (Gd.rate * rm * (p.gunLv >= 1 ? 1.3 : 1)); const d = Gd.dps * mul / Gd.rate * (1 + 0.15 * p.gunLv);
+      const angs = p.gunLv >= 2 ? [-0.07, 0.07] : [0];
+      for (const a of angs) railShot(p, a, d * (angs.length > 1 ? 0.65 : 1));
+      shake(0.08); sfx.rail();
+    }
+  } else if (p.gun === 'fireworks') {
+    p.fireT -= dt;
+    if (p.fireT <= 0) {
+      p.fireT = 1 / (Gd.rate * rm); const n = p.gunLv >= 2 ? 2 : 1, d = Gd.dps * mul / Gd.rate / n * (1 + 0.15 * p.gunLv);
+      const h = frontTarget(p, 90);
+      for (let i = 0; i < n; i++) G.fw.push({ x: p.x + (n > 1 ? (i ? 18 : -18) : 0), y: SQY - R * 0.6 - 50, vx: rand(-40, 40), vy: -760, tg: h, ty: rand(VH * 0.12, SQY - 300), dmg: d, who: p.id, hue: (Math.random() * 12) | 0, sparks: 10 + 4 * p.gunLv, splash: 55 + 12 * p.gunLv });
+      sfx.whoosh();
+    }
+  } else if (p.gun === 'pupcannon') {
+    p.fireT -= dt;
+    if (p.fireT <= 0) {
+      p.fireT = 1 / (Gd.rate * rm); const n = p.gunLv >= 2 ? 2 : 1, b = 3 + p.gunLv, d = Gd.dps * mul / Gd.rate / n / b * 1.7;
+      for (let i = 0; i < n; i++) G.pups.push({ x: p.x + (n > 1 ? (i ? 16 : -16) : 0), y: SQY - R * 0.6 - 40, vx: rand(-60, 60), vy: -650, tgt: null, bounces: b, dmg: d, who: p.id, hit: new Set() });
+      sfx.bork();
+    }
+  } else if (p.gun === 'plasma') {
+    p.fireT -= dt;
+    if (p.fireT <= 0) {
+      p.fireT = 1 / (Gd.rate * rm); const twin = p.gunLv >= 2, d = Gd.dps * mul / Gd.rate * (1 + 0.2 * p.gunLv) / (twin ? 1.6 : 1);
+      for (const ox of twin ? [-20, 20] : [0]) G.orbs.push({ x: p.x + ox, y: SQY - R * 0.6 - 70, vy: -540, r: 13 + 4 * p.gunLv, dmg: d, splash: 70 + 15 * p.gunLv, who: p.id, col: p.col, hits: {} });
+      sfx.plasma();
+    }
+  }
+}
 function railShot(p, a, d) {
   const R = squadR(p), ox = p.x, oy = SQY - R * 0.55 - 70 * giantScale(p), ex = Math.sin(a), ey = -Math.cos(a), w = 16 + 5 * p.gunLv;
   for (const e of G.enemies) { if (e.dead || e.ghost) continue; const vx = e.x - ox, vy = e.y - oy, t = vx * ex + vy * ey; if (t < 0) continue; if (Math.abs(vx * ey - vy * ex) < w + e.r) { dmgEnemy(e, d, p.id, 'x'); burst(e.x, e.y, p.col, 6, 200, 3, 0.3); } }
@@ -798,6 +891,7 @@ function updateGuns(dt) {
   }
   G.saws = G.saws.filter(w => !w.dead);
   for (const f of G.fw) {
+    if (f.tg && hLive(f.tg)) { const [tx, ty] = hPos(f.tg); f.ty = ty; f.vx += (clamp((tx - f.x) * 3, -420, 420) - f.vx) * Math.min(1, dt * 6); } else f.tg = null;
     f.x += f.vx * dt; f.y += f.vy * dt;
     if (Math.random() < 0.8) part({ k: 's', x: f.x, y: f.y + 6, vx: rand(-30, 30), vy: rand(60, 160), life: 0.35, max: 0.35, size: 2.5, col: RAINBOW[(f.hue + ((Math.random() * 3) | 0)) % 12] }, 1);
     if (f.y <= f.ty || f.y < 20) {
@@ -809,11 +903,16 @@ function updateGuns(dt) {
   }
   G.fw = G.fw.filter(f => !f.dead);
   for (const u of G.pups) {
-    if (!u.tgt || u.tgt.dead || u.tgt.ghost) { u.tgt = null; let bd = 620; for (const e of G.enemies) if (targetable(e) && !u.hit[e.id]) { const d = Math.hypot(e.x - u.x, e.y - u.y); if (d < bd) { bd = d; u.tgt = e; } } }
-    if (u.tgt) { const a = Math.atan2(u.tgt.y - u.y, u.tgt.x - u.x); u.vx += (Math.cos(a) * 780 - u.vx) * Math.min(1, dt * 8); u.vy += (Math.sin(a) * 780 - u.vy) * Math.min(1, dt * 8); }
+    if (!u.hit.has) u.hit = new Set();
+    if (u.tgt && !hLive(u.tgt)) u.tgt = null;
+    if (!u.tgt) {
+      if (!u.first) { u.first = 1; const p = G.players[u.who]; u.tgt = p ? frontTarget(p, 90) : null; }
+      if (!u.tgt) { let bd = 620; for (const h of hittables()) { if (u.hit.has(h.o)) continue; const [x, y] = hPos(h); const d = Math.hypot(x - u.x, y - u.y); if (d < bd) { bd = d; u.tgt = h; } } }
+    }
+    let tx = 0, ty = 0; if (u.tgt) { [tx, ty] = hPos(u.tgt); const a = Math.atan2(ty - u.y, tx - u.x); u.vx += (Math.cos(a) * 780 - u.vx) * Math.min(1, dt * 8); u.vy += (Math.sin(a) * 780 - u.vy) * Math.min(1, dt * 8); }
     u.x += u.vx * dt; u.y += u.vy * dt;
-    if (u.tgt && Math.hypot(u.tgt.x - u.x, u.tgt.y - u.y) < u.tgt.r + 12) {
-      u.hit[u.tgt.id] = 1; dmgEnemy(u.tgt, u.dmg, u.who, 'x'); burst(u.x, u.y, '#ffb36b', 8, 200, 3, 0.3); if (Math.random() < 0.15) text(u.x, u.y - 18, pick(['CHOMP', 'NOM', 'BORK']), '#ffb36b', 14, 0.6); sfx.bork();
+    if (u.tgt && Math.hypot(tx - u.x, ty - u.y) < u.tgt.r + 12) {
+      if (u.tgt.k === 'e') u.hit.add(u.tgt.o); hitObj(u.tgt, u.dmg, u.who); burst(u.x, u.y, '#ffb36b', 8, 200, 3, 0.3); if (Math.random() < 0.15) text(u.x, u.y - 18, pick(['CHOMP', 'NOM', 'BORK']), '#ffb36b', 14, 0.6); sfx.bork();
       u.bounces--; u.tgt = null; u.vy = -300; u.vx = rand(-200, 200);
       if (u.bounces <= 0) { u.dead = true; burst(u.x, u.y, '#ffffff', 14, 220, 3, 0.4); }
     }
@@ -835,9 +934,15 @@ function updateEdge(dt) {
   const al = alive(); if (!al.length) return;
   const E = [40, 400, 1500, 3500, 6000][G.dir.s - 1] || 8500;
   const avg = al.reduce((a, p) => a + p.count, 0) / al.length;
-  let tgt = clamp(0.5 + 0.5 * Math.sqrt(avg / E), 0.6, 1.12);
+  let tgt = clamp(0.5 + 0.5 * Math.sqrt(avg / E), 0.6, 1.4);
   if (G.dir.s >= 2 && al.every(p => p.gun === 'rifle')) tgt *= 0.85;
   G.edge += (tgt - G.edge) * Math.min(1, dt * 0.5);
+}
+function crateBeat(list) {
+  if (G.legendAt == null || G.crateBeat++ !== G.legendAt) return;
+  const c = G.players.length > 1 ? (list.find(c => c.owner === weakest().id) || list[0]) : pick(list);
+  c.type = pick(['golden', 'dual', 'army']); c.hp = c.maxhp = c.maxhp * 1.25;
+  later(0.4, () => { text(c.x, 160, 'LEGENDARY!', RAR[3].col, 30, 1.6); sfx.reward(); });
 }
 function supplyDrop() {
   const w = weakest(); let type;
@@ -856,7 +961,7 @@ function siege(ogre) {
   const s = G.dir.s; let left = Math.random() < 0.5;
   if (G.players.length > 1 && alive().length > 1) { const [a, b] = G.players, ra = pDps(a) / Math.max(1, pDps(b)); G.sieg = (G.sieg || 0) ^ 1; left = ra < 0.7 ? true : ra > 1.43 ? false : !!G.sieg; }
   const l0 = left ? 306 : 0, l1 = left ? RW : 294;
-  spawnCrate(left ? 150 : 450);
+  crateBeat([spawnCrate(left ? 150 : 450)]);
   G.walls.push({ x: 300, y: -30, len: SCROLL * 4.8 + 200 });
   horde(7 + 4 * s, l0, l1, 3.6);
   if (ogre) later(1.6, () => spawnEnemy(s >= 4 && Math.random() < 0.4 ? 'troll' : 'ogre', (l0 + l1) / 2, l0, l1));
@@ -867,6 +972,7 @@ function choice() {
   const t1 = crateType(undefined, co ? G.players[0] : null); const t2 = crateType(co ? undefined : t1, co ? G.players[1] : null);
   const a = spawnCrate(110, t1), b = spawnCrate(490, !co && t2 === t1 ? 'troops' : t2);
   if (!co) { a.pair = b; b.pair = a; }
+  crateBeat([a, b]);
   G.walls.push({ x: 212, y: -30, len: SCROLL * 4.8 + 200 }, { x: 388, y: -30, len: SCROLL * 4.8 + 200 });
   horde(6 + 3 * s, 222, 378, 3.6);
 }
@@ -1012,11 +1118,24 @@ function giveCrate(p, type) {
   const over = (pct, t) => { p.dmgMul += pct; title = t; sub = 'Damage +' + Math.round(pct * 100) + '%'; };
   switch (type) {
     case 'mg': case 'ray': case 'flame': case 'volt': case 'scatter': case 'plasma': case 'buzzsaw': case 'rail': case 'fireworks': case 'pupcannon':
+      if (p.gun !== type && p.gun2 === type) { if (p.gunLv2 < 2) { p.gunLv2++; title = 'DUAL ' + GUNS[type].name + TIER[p.gunLv2]; sub = 'Your second gun levels up'; } else over(0.25, 'DUAL ' + GUNS[type].name + ' MAXED'); break; }
+      if (p.gun !== type && gunRar(type) < gunRar(p.gun)) { p.dmgMul += 0.15; title = GUNS[p.gun].name + ' BOOST'; sub = 'Kept your ' + RAR[gunRar(p.gun)].name.toLowerCase() + ' gun · +15% damage'; break; }
       if (p.gun === type) {
         if (p.gunLv < 2) { p.gunLv++; p.dmgMul += 0.15; title = CR[type].name + TIER[p.gunLv]; sub = TIER_SUB[type][p.gunLv]; }
         else over(0.3, GUNS[type].name + ' MAXED');
       } else { p.gun = type; p.gunLv = 0; p.used[type] = 1; sub = { mg: 'Bullets for days', ray: 'Pierces everything in its path', flame: 'Short range. Melts shields and crates', volt: 'Chains between enemies', scatter: 'Shotgun bursts that shred hordes', plasma: 'Piercing orbs that explode', buzzsaw: 'Boomerang blades that come back', rail: 'One huge shot through everything', fireworks: 'Rockets that burst into colour', pupcannon: 'Fires Shibas. They bite. They bounce.' }[type]; }
       break;
+    case 'golden': {
+      if (gunRar(p.gun) < 2) { p.gun = pick(['ray', 'rail', 'fireworks', 'pupcannon'].filter(g => g !== p.gun2)); p.used[p.gun] = 1; }
+      p.gunLv = 2; p.dmgMul += 0.5; p.gold = (p.gold || 0) + 1; sub = GUNS[p.gun].name + ' maxed and gilded · +50% damage';
+      G.flash = 0.7; G.flashCol = RAR[3].col; break;
+    }
+    case 'dual': {
+      if (p.gun2) { p.gunLv2 = 2; p.dmgMul += 0.2; sub = 'Second ' + GUNS[p.gun2].name + ' maxed'; }
+      else { p.gun2 = pick(DUALS.filter(g => g !== p.gun)); p.gunLv2 = 1; p.fireT2 = 0; sub = 'A ' + GUNS[p.gun2].name + ' fires alongside your ' + GUNS[p.gun].name; }
+      G.flash = 0.7; G.flashCol = RAR[3].col; break;
+    }
+    case 'army': { const n = Math.min(CAP, p.count * 2 + Math.round(25 * PW(s))) - p.count; p.count += n; sub = '+' + fmt(n) + ' soldiers'; joiners(p, 40); G.flash = 0.7; G.flashCol = RAR[3].col; break; }
     case 'mystery': { const w = wildCard(p); title = w[0]; sub = w[1]; G.flash = 0.6; G.flashCol = '#c25bff'; break; }
     case 'troops': { const n = Math.round(14 * PW(s)) + 8; p.count = Math.min(CAP, p.count + n); sub = '+' + n + ' soldiers'; joiners(p, 24); break; }
     case 'tank': if (p.tanks < 3) { p.tanks++; sub = 'Heavy shells with splash'; } else over(0.2, 'ARMOUR UP'); break;
@@ -1034,6 +1153,17 @@ function giveCrate(p, type) {
   }
   return [title, sub];
 }
+const RAR = [{ name: 'COMMON', col: '#8fe86a' }, { name: 'RARE', col: '#4fb4ff' }, { name: 'EPIC', col: '#c46bff' }, { name: 'LEGENDARY', col: '#ffb020' }];
+const CRAR = {
+  mg: 0, scatter: 0, troops: 0, drones: 0, shield: 0, zoomies: 0,
+  flame: 1, volt: 1, buzzsaw: 1, plasma: 1, tank: 1, rockets: 1, medic: 1, freeze: 1, awoo: 1,
+  ray: 2, rail: 2, fireworks: 2, pupcannon: 2, mech: 2, ally: 2, storm: 2, orbital: 2, mystery: 2,
+  golden: 3, dual: 3, army: 3
+};
+const gunRar = g => g === 'rifle' ? -1 : CRAR[g];
+const rarCol = t => RAR[Math.max(0, CRAR[t] || 0)].col;
+for (const k in GUNS) if (k !== 'rifle') GUNS[k].dps *= [1, 1.08, 1.18][CRAR[k]];
+const DUALS = ['buzzsaw', 'rail', 'fireworks', 'pupcannon', 'plasma'];
 const WILDS = ['hole', 'disco', 'rain', 'giant', 'pinball', 'tornado', 'bubbles', 'warp'];
 function wildCard(p, kind) {
   kind = kind || pick(WILDS);
@@ -1288,66 +1418,8 @@ function updatePlayer(p, dt) {
   movePlayer(p, dt);
   const R = squadR(p);
   const mul = power(p), rm = rateM(p), Gd = GUNS[p.gun];
-  if (p.gun === 'rifle' || p.gun === 'mg') {
-    const n = visN(p); const sps0 = Gd.rate * (1 + Math.min(n, 60) / 14), sps = sps0 * rm * (1 + 0.4 * p.gunLv);
-    p.fireT -= dt; let guard = 0;
-    const crit = 0.12 * perk(p, 'crit'), pierce = perk(p, 'pierce');
-    while (p.fireT <= 0 && guard++ < 14) {
-      p.fireT += 1 / sps;
-      const sp = SP[Math.floor(Math.random() * n)];
-      const x = p.x + sp[0] + 3.4 + (p.gun === 'mg' ? rand(-2, 2) : 0), y = SQY + sp[1] - 14;
-      const isCrit = Math.random() < crit;
-      G.bullets.push({ x, y, vy: p.gun === 'rifle' ? -900 : -1080, vx: p.gun === 'mg' ? rand(-25 - 15 * p.gunLv, 25 + 15 * p.gunLv) : 0, dmg: Gd.dps * mul / sps0 * (isCrit ? 4 : 1), who: p.id, col: isCrit ? C.gold : G.fever > 0 ? RAINBOW[(Math.random() * 12) | 0] : p.col, crit: isCrit, pierce, hits: null });
-      if (Math.random() < 0.3) part({ k: 'f', x, y: y - 2, r: 10, life: 0.06, max: 0.06, col: p.col }, 1);
-    }
-    sfx.shot();
-  } else if (p.gun === 'ray') rayTick(p, dt, Gd.dps * mul * rm);
-  else if (p.gun === 'flame') coneTick(p, p.x, SQY - squadR(p) * 0.6, 270 + squadR(p) + 50 * p.gunLv, 0.4 + 0.1 * p.gunLv, R * 0.45, Gd.dps * mul * rm * dt * (1 + 0.25 * p.gunLv), dt, true, p.gunLv);
-  else if (p.gun === 'scatter') {
-    p.fireT -= dt;
-    if (p.fireT <= 0) {
-      p.fireT = 1 / (Gd.rate * rm); const n = 7 + 3 * p.gunLv + Math.min(6, Math.floor(visN(p) / 12)), per = Gd.dps * mul / Gd.rate / n * (1 + 0.15 * p.gunLv);
-      for (let i = 0; i < n; i++) { const a = -Math.PI / 2 + (i / (n - 1) - 0.5) * 0.85 + rand(-0.04, 0.04), sp = rand(820, 980); G.bullets.push({ x: p.x + rand(-R * 0.4, R * 0.4), y: SQY - R * 0.6, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, dmg: per, who: p.id, col: G.fever > 0 ? RAINBOW[i % 12] : p.col, pierce: perk(p, 'pierce'), hits: null, life: 0.6 }); }
-      part({ k: 'f', x: p.x, y: SQY - R * 0.7, r: 40, life: 0.1, max: 0.1, col: p.col }, 1); sfx.cannon();
-    }
-  } else if (p.gun === 'buzzsaw') {
-    p.fireT -= dt;
-    if (p.fireT <= 0) {
-      p.fireT = 1 / (Gd.rate * rm); const n = 1 + p.gunLv, d = Gd.dps * mul / Gd.rate / n * 0.55 * (1 + 0.15 * p.gunLv);
-      for (let i = 0; i < n; i++) { const a = -Math.PI / 2 + (i - (n - 1) / 2) * 0.38; G.saws.push({ x: p.x, y: SQY - R * 0.6 - 40, vx: Math.cos(a) * 760, vy: Math.sin(a) * 760, t: 0, back: false, r: 15 + 2 * p.gunLv, dmg: d, who: p.id, col: p.col, hit: {} }); }
-      sfx.saw();
-    }
-  } else if (p.gun === 'rail') {
-    p.fireT -= dt;
-    if (p.fireT <= 0) {
-      p.fireT = 1 / (Gd.rate * rm * (p.gunLv >= 1 ? 1.3 : 1)); const d = Gd.dps * mul / Gd.rate * (1 + 0.15 * p.gunLv);
-      const angs = p.gunLv >= 2 ? [-0.07, 0.07] : [0];
-      for (const a of angs) railShot(p, a, d * (angs.length > 1 ? 0.65 : 1));
-      shake(0.08); sfx.rail();
-    }
-  } else if (p.gun === 'fireworks') {
-    p.fireT -= dt;
-    if (p.fireT <= 0) {
-      p.fireT = 1 / (Gd.rate * rm); const n = p.gunLv >= 2 ? 2 : 1, d = Gd.dps * mul / Gd.rate / n * (1 + 0.15 * p.gunLv);
-      const tg = G.enemies.filter(targetable);
-      for (let i = 0; i < n; i++) { const e = tg.length ? pick(tg) : null; G.fw.push({ x: p.x + (n > 1 ? (i ? 18 : -18) : 0), y: SQY - R * 0.6 - 50, vx: e ? clamp((e.x - p.x) * 1.2, -260, 260) : rand(-60, 60), vy: -760, ty: e ? e.y : rand(VH * 0.15, SQY - 240), dmg: d, who: p.id, hue: (Math.random() * 12) | 0, sparks: 10 + 4 * p.gunLv, splash: 55 + 12 * p.gunLv }); }
-      sfx.whoosh();
-    }
-  } else if (p.gun === 'pupcannon') {
-    p.fireT -= dt;
-    if (p.fireT <= 0) {
-      p.fireT = 1 / (Gd.rate * rm); const n = p.gunLv >= 2 ? 2 : 1, b = 3 + p.gunLv, d = Gd.dps * mul / Gd.rate / n / b * 1.7;
-      for (let i = 0; i < n; i++) G.pups.push({ x: p.x + (n > 1 ? (i ? 16 : -16) : 0), y: SQY - R * 0.6 - 40, vx: rand(-60, 60), vy: -650, tgt: null, bounces: b, dmg: d, who: p.id, hit: {} });
-      sfx.bork();
-    }
-  } else if (p.gun === 'plasma') {
-    p.fireT -= dt;
-    if (p.fireT <= 0) {
-      p.fireT = 1 / (Gd.rate * rm); const twin = p.gunLv >= 2, d = Gd.dps * mul / Gd.rate * (1 + 0.2 * p.gunLv) / (twin ? 1.6 : 1);
-      for (const ox of twin ? [-20, 20] : [0]) G.orbs.push({ x: p.x + ox, y: SQY - R * 0.6 - 70, vy: -540, r: 13 + 4 * p.gunLv, dmg: d, splash: 70 + 15 * p.gunLv, who: p.id, col: p.col, hits: {} });
-      sfx.plasma();
-    }
-  }
+  fireGun(p, dt, R);
+  if (p.gun2) { const sv = [p.gun, p.gunLv, p.fireT]; p.gun = p.gun2; p.gunLv = p.gunLv2; p.fireT = p.fireT2 || 0; fireGun(p, dt, R); p.fireT2 = p.fireT; [p.gun, p.gunLv, p.fireT] = sv; }
   else if (p.gun === 'volt') {
     p.voltT -= dt;
     if (p.voltT <= 0) { p.voltT = 1 / (Gd.rate * rm * (1 + 0.25 * p.gunLv)); voltFire(p, Gd.dps * mul / Gd.rate * (1 + 0.1 * p.gunLv)); }
@@ -1650,6 +1722,7 @@ function updateShots(dt, edt) {
 function explode(x, y, r, dmg, who, col, quiet) {
   for (const e of G.enemies) { if (e.dead) continue; const d = Math.hypot(x - e.x, y - e.y); if (d < r + e.r) dmgEnemy(e, dmg * (d < e.r + 8 ? 1 : 0.6), who, 'x'); }
   if (who >= 0) for (const c of G.crates) if (!c.dead && !c.missed && Math.abs(x - c.x) < r + c.w / 2 && Math.abs(y - c.y) < r + c.h / 2) dmgCrate(c, dmg * 0.7, who);
+  if (who >= 0) for (const g of G.gates) if (!g.applied && Math.abs(y - g.y) < r + g.h / 2) for (const gt of g.gates) if (!gt.broken && x + r > gt.x0 && x - r < gt.x1) dmgGate(gt, dmg * 0.7, who);
   for (const f of G.eshots) if (!f.dead && f.shoot && Math.hypot(x - f.x, y - f.y) < r + f.r) { f.hp -= dmg; if (f.hp <= 0) popShot(f); }
   if (!quiet) { burst(x, y, col, 16, 260, 3.5, 0.45); burst(x, y, C.gold, 8, 180, 3, 0.35); ring(x, y, col, 6, r, 0.3, 4); flare(x, y, C.gold, r * 1.2, 0.18); shake(0.06); }
 }
@@ -2081,30 +2154,40 @@ function drawGates() {
     if (gt.op === '÷' || gt.op === '?') { ctx.font = '700 11px ' + FB; ctx.textAlign = 'center'; ctx.fillStyle = hexA('#ffffff', 0.7); ctx.fillText(gt.op === '?' ? 'MYSTERY' : 'LOCKED', (x0 + x1) / 2, y + h / 2 - 9); }
   }
 }
+function crateTag(c) {
+  if (!CR[c.type] || !CR[c.type].gun) return '';
+  const p = c.owner >= 0 ? G.players[c.owner] : G.players.length > 1 ? weakest() : G.players[0];
+  if (!p) return '';
+  if (p.gun === c.type || p.gun2 === c.type) return (p.gun === c.type ? p.gunLv : p.gunLv2) < 2 ? 'TIER UP' : '+DAMAGE';
+  const a = CRAR[c.type], b = gunRar(p.gun);
+  return a > b ? 'UPGRADE' : a === b ? 'SWAP' : '+DAMAGE';
+}
 function drawCrates() {
   for (const c of G.crates) {
     if (c.dead) continue;
     const a = c.missed ? clamp(1 - (c.y - SQY) / 120, 0, 0.5) : 1;
-    additive(() => drawGlow(c.x, c.y, 90 + Math.sin(G.time * 5) * 8, C.gold, (0.3 + c.bump * 0.3) * a));
+    const rt = Math.max(0, CRAR[c.type] || 0), rc = RAR[rt].col, leg = rt === 3;
+    additive(() => { drawGlow(c.x, c.y, (leg ? 130 : 90) + Math.sin(G.time * 5) * 8, rc, (0.3 + c.bump * 0.3 + (leg ? 0.25 : 0)) * a); if (leg) drawGlow(c.x, c.y, 60, RAINBOW[Math.floor(G.time * 8) % 12], 0.35 * a); });
     ctx.globalAlpha = a;
     const s = 1 + c.bump * 0.1;
     ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(Math.sin(G.time * 2.2 + c.x) * 0.05); ctx.scale(s, s);
     const w = c.w, h = c.h;
     ctx.fillStyle = c.bump > 0.7 ? '#fff1c2' : '#2b1c06'; ctx.fillRect(-w / 2, -h / 2, w, h);
-    ctx.strokeStyle = C.gold; ctx.lineWidth = 4; ctx.strokeRect(-w / 2 + 2, -h / 2 + 2, w - 4, h - 4);
-    ctx.strokeStyle = hexA(C.gold, 0.35); ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(-w / 2 + 8, -h / 2 + 8); ctx.lineTo(w / 2 - 8, h / 2 - 8); ctx.moveTo(w / 2 - 8, -h / 2 + 8); ctx.lineTo(-w / 2 + 8, h / 2 - 8); ctx.stroke();
-    ctx.fillStyle = '#2b1c06'; ctx.fillRect(-26, -24, 52, 48); ctx.strokeStyle = C.gold; ctx.lineWidth = 2; ctx.strokeRect(-26, -24, 52, 48);
-    drawIcon(CR[c.type].icon, 0, 0, 30, C.gold);
+    ctx.strokeStyle = rc; ctx.lineWidth = leg ? 6 : 4; ctx.strokeRect(-w / 2 + 2, -h / 2 + 2, w - 4, h - 4);
+    ctx.strokeStyle = hexA(rc, 0.35); ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(-w / 2 + 8, -h / 2 + 8); ctx.lineTo(w / 2 - 8, h / 2 - 8); ctx.moveTo(w / 2 - 8, -h / 2 + 8); ctx.lineTo(-w / 2 + 8, h / 2 - 8); ctx.stroke();
+    ctx.fillStyle = '#2b1c06'; ctx.fillRect(-26, -24, 52, 48); ctx.strokeStyle = rc; ctx.lineWidth = 2; ctx.strokeRect(-26, -24, 52, 48);
+    drawIcon(CR[c.type].icon, 0, 0, 30, rc);
     ctx.restore();
     ctx.globalAlpha = a;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     const nm = CR[c.type].name;
-    if (G.players.length > 1 && c.owner >= 0 && !c.missed) { const op = G.players[c.owner]; ctx.font = '14px ' + FD; ctx.lineWidth = 5; ctx.strokeStyle = C.ink; ctx.strokeText('FOR ' + op.name, c.x, c.y - h / 2 - 38); ctx.fillStyle = op.col; ctx.fillText('FOR ' + op.name, c.x, c.y - h / 2 - 38); }
-    ctx.font = '14px ' + FD; ctx.lineWidth = 5; ctx.strokeStyle = C.ink; ctx.strokeText(nm, c.x, c.y - h / 2 - 18); ctx.fillStyle = C.gold; ctx.fillText(nm, c.x, c.y - h / 2 - 18);
+    if (G.players.length > 1 && c.owner >= 0 && !c.missed) { const op = G.players[c.owner]; ctx.font = '14px ' + FD; ctx.lineWidth = 5; ctx.strokeStyle = C.ink; ctx.strokeText('FOR ' + op.name, c.x, c.y - h / 2 - 56); ctx.fillStyle = op.col; ctx.fillText('FOR ' + op.name, c.x, c.y - h / 2 - 56); }
+    ctx.font = '14px ' + FD; ctx.lineWidth = 5; ctx.strokeStyle = C.ink; ctx.strokeText(nm, c.x, c.y - h / 2 - 18); ctx.fillStyle = rc; ctx.fillText(nm, c.x, c.y - h / 2 - 18);
+    if (!c.missed) { const tag = crateTag(c), lab = RAR[rt].name + (tag ? ' · ' + tag : ''); ctx.font = '13px ' + FD; ctx.lineWidth = 4; ctx.strokeText(lab, c.x, c.y - h / 2 - 36); ctx.fillStyle = tag === '+DAMAGE' ? '#c9c2e6' : rc; ctx.fillText(lab, c.x, c.y - h / 2 - 36); }
     if (!c.missed) {
       const n = fmt(Math.max(0, Math.ceil(c.hp)));
       ctx.font = '26px ' + FD; ctx.lineWidth = 7; ctx.strokeText(n, c.x, c.y + h / 2 + 22); ctx.fillStyle = '#ffffff'; ctx.fillText(n, c.x, c.y + h / 2 + 22);
-      hpBar(c.x, c.y + h / 2 + 4, w, c.hp / c.maxhp, C.gold);
+      hpBar(c.x, c.y + h / 2 + 4, w, c.hp / c.maxhp, rc);
     }
     ctx.globalAlpha = 1;
     if (c.pair && c.x < 300 && !c.pair.dead && !c.missed) { ctx.font = '22px ' + FD; ctx.lineWidth = 6; ctx.strokeStyle = C.ink; ctx.strokeText('OR', 300, c.y); ctx.fillStyle = C.gold; ctx.fillText('OR', 300, c.y); }
@@ -2138,6 +2221,8 @@ function drawIcon(t, x, y, s, col) {
     case 'saw': ctx.beginPath(); for (let i = 0; i < 16; i++) { const a = i / 16 * TAU, rr = i % 2 ? 6.5 : 9.5; ctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr); } ctx.closePath(); ctx.fill(); ctx.fillStyle = C.ink; ctx.beginPath(); ctx.arc(0, 0, 2.5, 0, TAU); ctx.fill(); break;
     case 'rail': ctx.fillRect(-10, -2, 20, 4); ctx.fillRect(-10, -4, 5, 8); for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.arc(-1 + i * 4, 0, 3.5, 0, TAU); ctx.stroke(); } break;
     case 'firework': ctx.fillRect(-2, -2, 4, 11); ctx.beginPath(); ctx.moveTo(-2, -2); ctx.lineTo(0, -6); ctx.lineTo(2, -2); ctx.fill(); for (let i = 0; i < 6; i++) { const a = i / 6 * TAU; ctx.fillRect(Math.cos(a) * 7 - 0.8, -8 + Math.sin(a) * 4 - 0.8, 1.6, 1.6); } break;
+    case 'crown': ctx.beginPath(); ctx.moveTo(-10, 6); ctx.lineTo(-10, -6); ctx.lineTo(-5, 0); ctx.lineTo(0, -9); ctx.lineTo(5, 0); ctx.lineTo(10, -6); ctx.lineTo(10, 6); ctx.closePath(); ctx.fill(); break;
+    case 'dual': for (const sy of [-5, 5]) { ctx.fillRect(-10, sy - 2, 18, 4); ctx.fillRect(-10, sy, 5, 5); } break;
     case 'paw': for (const [dx, dy, r] of [[-6, -4, 2.8], [-2, -8, 2.8], [2, -8, 2.8], [6, -4, 2.8]]) { ctx.beginPath(); ctx.arc(dx, dy, r, 0, TAU); ctx.fill(); } ctx.beginPath(); ctx.ellipse(0, 4, 6.5, 5.5, 0, 0, TAU); ctx.fill(); break;
     case 'dragon': ctx.beginPath(); ctx.moveTo(0, -4); ctx.lineTo(-10, -9); ctx.lineTo(-7, 2); ctx.lineTo(-2, 0); ctx.lineTo(0, 8); ctx.lineTo(2, 0); ctx.lineTo(7, 2); ctx.lineTo(10, -9); ctx.closePath(); ctx.fill(); break;
   }
@@ -2909,11 +2994,12 @@ function drawHUD(rdt) {
     let ix = x + 14; let iy = y + 39;
     ctx.font = '700 12px ' + FB; ctx.textAlign = 'left';
     const item = (icon, label, col) => { if (ix > x + cw - 34) return; drawIcon(icon, ix + 8, iy, 16, col); ix += 19; ctx.fillStyle = col; ctx.fillText(label, ix, iy + 1); ix += ctx.measureText(label).width + 11; };
-    item(p.gun, GUNS[p.gun].name + TIER[p.gunLv || 0], '#ffffff');
+    item(CR[p.gun] ? CR[p.gun].icon : p.gun, (p.gold ? 'GOLDEN ' : '') + GUNS[p.gun].name + TIER[p.gunLv || 0], p.gold ? RAR[3].col : p.gun === 'rifle' ? '#ffffff' : RAR[gunRar(p.gun)].col);
     if (p.tanks) item('tank', '×' + p.tanks, C.gold);
     if (p.rockets) item('rockets', '×' + p.rockets, C.gold);
     if (p.drones) item('drone', '×' + p.drones, C.gold);
     ix = x + 14; iy = y + 59;
+    if (p.gun2) item(CR[p.gun2].icon, '+' + GUNS[p.gun2].name + TIER[p.gunLv2 || 0], RAR[3].col);
     if (p.shield > 0) item('shield', fmt(p.shield), C.frost);
     if (p.mech > 0) item('mech', Math.ceil(p.mech) + 's', C.gold);
     if (p.storm > 0) item('storm', Math.ceil(p.storm) + 's', '#d6e4ff');
@@ -3216,7 +3302,7 @@ function snapshot() {
   }
   const ev = NET.log; NET.log = [];
   return { T: 's', sq: Math.round(SQY), sc: rr(G.scroll), d: [G.dir.s, rd(G.dir.t), rd(G.dir.len)], fz: rd(G.freeze), fl: rd(G.flash), fc: G.flashCol,
-    P: G.players.map(p => ({ count: p.count, x: rr(p.x), gun: p.gun, gunLv: p.gunLv, ult: r2(p.ult), giant: rd(p.giant), disco: rd(p.disco), dmgMul: p.dmgMul, tanks: p.tanks, rockets: p.rockets, drones: p.drones, shield: rr(p.shield), shieldHit: rd(p.shieldHit), mech: rd(p.mech), ally: p.ally, allyBreath: rd(p.allyBreath), storm: rd(p.storm), score: p.score, chill: rd(p.chill), down: p.down, hurt: rd(p.hurt), boost: rd(p.boost), perks: p.perks, lost: p.lost, kills: p.kills })),
+    P: G.players.map(p => ({ count: p.count, x: rr(p.x), gun: p.gun, gunLv: p.gunLv, gun2: p.gun2 || 0, gunLv2: p.gunLv2 || 0, gold: p.gold || 0, ult: r2(p.ult), giant: rd(p.giant), disco: rd(p.disco), dmgMul: p.dmgMul, tanks: p.tanks, rockets: p.rockets, drones: p.drones, shield: rr(p.shield), shieldHit: rd(p.shieldHit), mech: rd(p.mech), ally: p.ally, allyBreath: rd(p.allyBreath), storm: rd(p.storm), score: p.score, chill: rd(p.chill), down: p.down, hurt: rd(p.hurt), boost: rd(p.boost), perks: p.perks, lost: p.lost, kills: p.kills })),
     N, E,
     GT: G.gates.map(g => [rr(g.y), g.h, g.applied ? 1 : 0, g.gates.map(t => [t.op, t.val, t.x0, t.x1, rd(t.prog), t.k, rd(t.bump), rd(t.flash), t.broken ? 1 : 0])]),
     CR: G.crates.map(c => [rr(c.x), rr(c.y), c.type, rr(c.hp), rr(c.maxhp), rd(c.bump), c.missed ? 1 : 0, c.pair && !c.pair.dead ? 1 : 0, c.owner == null ? -1 : c.owner]),
@@ -3483,7 +3569,7 @@ $('bNetBack').onclick = () => { teardown(); toMenu(); };
 $('bCopy').onclick = () => { const t = NET.code; try { navigator.clipboard.writeText(t).then(() => { $('bCopy').textContent = 'Copied'; setTimeout(() => $('bCopy').textContent = 'Copy code', 1500); }, () => {}); } catch (e) {} };
 window.addEventListener('pagehide', () => { if (NET.role) send({ T: 'bye' }); });
 
-window.__gb = { start: m => start(m), get G() { return G; }, update: dt => update(dt), render: () => render(0.016), take: i => takePerk(i), stage: s => { G.enemies = []; G.gates = []; G.crates = []; G.timers = []; startStage(s); }, beat: (k, a) => BEAT[k](a), boss: () => spawnBoss(), give: (t, i = 0) => giveCrate(G.players[i], t), perks: s => openPerks(s), ult: id => pressUlt(id), wild: (k, i = 0) => wildCard(G.players[i], k) };
+window.__gb = { crate: (x, t) => spawnCrate(x, t), start: m => start(m), get G() { return G; }, update: dt => update(dt), render: () => render(0.016), take: i => takePerk(i), stage: s => { G.enemies = []; G.gates = []; G.crates = []; G.timers = []; startStage(s); }, beat: (k, a) => BEAT[k](a), boss: () => spawnBoss(), give: (t, i = 0) => giveCrate(G.players[i], t), perks: s => openPerks(s), ult: id => pressUlt(id), wild: (k, i = 0) => wildCard(G.players[i], k) };
 requestAnimationFrame(frame);
 })();
 </script>
